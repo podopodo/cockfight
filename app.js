@@ -1,0 +1,392 @@
+listen_to=2000
+var express = require('express');
+var app = express();
+var serv = require('http').Server(app);
+
+app.get('/',function(req,res) {
+	res.sendFile(__dirname + '/client/index.html');
+});
+app.use('/client',express.static(__dirname+'/client'));
+app.use('/node_module',express.static(__dirname+'/node_module'));
+serv.listen(listen_to);
+console.log("Server started. Listening at port "+listen_to);
+
+var CHATHISTORY="";
+var SOCKET_LIST = {};
+var SCOREBOARD={};
+var BadWords =new Array("damn","cunt","asshole","ass","cocksucker","porn","gay","fag","dick","cock","puss","penis","vagina","butt","boob","tit","breast","lesbian","dyke","tranny","transvestite","queer","poop","turd","hermaphrodite","anal","std","gonorrhea","homo","pubic","herpes","horn","fart","beastiality","piss","hardcore","erection","orgasm","blowjob","cum","ejaculat","nigg","facial","dildo","vibrator","goddamn","death","murder","rape","bukkake","hentai","fellatio","cunnilingus","intercourse","erotic","pervert");
+//console.log(FILTERNAME);
+function fillChars(chr,cnt) {
+  var s = '';
+  for (var i=0; i<cnt; i++) { s += chr; }
+  return s;
+}
+
+function RemoveProfanity(str) {
+  //var str = document.getElementById('TAreaSrc').value;
+  str = str.replace(/\r?\n/g,' <br>');
+  var rg, BAD;
+  for (var i=0; i<BadWords.length; i++) {
+        BAD = BadWords[i];
+        //console.log(BAD);
+				rg = RegExp(BAD,"ig");
+        str = str.replace(rg,fillChars('*',BAD.length));
+  }
+  return str;
+}
+
+var Entity = function() {
+	var self= {
+		x:0,
+		y:0,
+		spdX:1,
+		spdY:1,
+		id:"",
+		xboundarymax:0,
+		yboundarymax:0,
+		xboundarymin:0,
+		yboundarymin:0,		
+	}
+	self.update = function() {
+		self.updatePosition();
+	}
+	self.updatePosition = function() {
+		self.x += self.spdX;
+		self.y += self.spdY;
+		if (self.x<self.xboundarymin)
+			self.x=self.xboundarymin;
+		if (self.y<self.yboundarymin)
+			self.y=self.yboundarymin;
+		if (self.x>self.xboundarymax)
+			self.x=self.xboundarymax;
+		if (self.y>self.yboundarymax)
+			self.y=self.yboundarymax;		
+	}
+	return self;
+}
+
+function getRandomColor() {
+  var letters = '0123456789ABCDEF';
+  var color = '#';
+  for (var i = 0; i < 6; i++) {
+    color += letters[Math.floor(Math.random() * 16)];
+  }
+  return color;
+}
+
+var Power = function(id) {
+	var self = Entity();
+	self.id=id;
+	self.number=""+Math.floor(1000*Math.random());
+	self.consumed=false;
+	self.visibility=false;
+	
+	self.life=10;
+	self.mana=10;
+	self.invulnerability=true;
+	self.powertype="";
+	
+	self.pickone=function() {
+		p=Math.floor(3*Math.random());
+		if (p===1)
+			self.powertype="FULL LIFE";
+		else if (p===2)
+			self.powertype="FULL MANA";
+		else if (p===3)
+			self.powertype="INVULNERABILITY";
+		else
+			self.powertype="FULL LIFE AND MANA";
+	}
+	return self;
+}
+
+var Player = function(id) {
+	var self = Entity();
+	self.id = id;
+	self.number=""+Math.floor(10*Math.random());
+	self.pressingRight=false;
+	self.pressingLeft=false;
+	self.pressingUp=false;
+	self.pressingDown=false;
+	self.pressingJump=false;
+	self.maxLife=10;
+	self.life=10;
+	self.maxSpd=3;
+	self.maxSpdjump=1;
+	self.maxmana=10;
+	self.mana=10;
+	self.name="";
+	self.pressingAttack=false;
+	self.score=0;
+	self.death=0;
+	self.dead=false;
+	self.draw=false;
+	self.invulnerable=false;
+	self.color=getRandomColor();
+	self.restTime=3;
+	
+	//console.log(self.color);
+	
+	self.rest=setInterval(function(){ // decrease life every 1 second
+		
+		if (self.pressingJump || self.dead || self.invulnerable || self.name=="")
+			return 0;
+		self.restTime-=1;
+		if (self.restTime<=0)
+			{
+			self.life-=1;
+			self.die();
+			self.restTime=3;
+			}
+		},1000);
+	
+	var super_update = self.update;
+	self.update = function() {
+		self.updateSpd();
+		
+		//SCOREBOARD[self.name]={score:self.score,death:self.death};
+		
+		if (self.pressingAttack && self.pressingJump) {
+				self.mana-=0.15;
+				if (self.mana<=0.0) {
+				self.pressingAttack = false;
+				self.mana=0;
+				}
+			}
+		else {
+					self.mana+=0.02;
+					if (self.mana>=self.maxmana) {
+					self.mana=self.maxmana;
+				}
+			}
+		
+		if (!self.pressingAttack && !self.dead && self.life<=self.maxLife) {
+				self.life+=0.007;
+		}
+		
+		
+		if (self.life>0)
+			super_update();
+		for(var i in Player.list) {
+			var player=Player.list[i];
+			var distancex=player.x-self.x;
+			var distancey=player.y-self.y;
+			distance=Math.sqrt(distancex*distancex+distancey*distancey);
+			if (distance<32 && i!=self.id && player.pressingAttack && player.pressingJump) {
+				if (!self.invulnerable && !self.dead && !player.dead) {
+						self.life-=0.3;
+						self.die();
+						if (self.life<=0)
+							player.score++;
+				}
+			}
+		}
+	}
+	
+		self.die=function() {
+			if (self.life<=0) {
+						self.dead=true;
+						self.death++;
+					}
+		}
+	
+	self.updateSpd = function() {
+		if(self.pressingJump) {
+			jmp=self.maxSpdjump;
+		}
+		else {
+			jmp=self.maxSpd;
+		}
+		if(self.pressingRight)
+			self.spdX = jmp;
+		else if(self.pressingLeft)
+			self.spdX = -jmp;
+		else
+			self.spdX=0;
+			
+		if(self.pressingUp)
+			self.spdY = -jmp;
+		else if(self.pressingDown)
+			self.spdY = jmp; 
+		else
+			self.spdY=0;
+		}
+	Player.list[id]=self;
+	return self;
+}
+
+Player.list = {};
+Player.onConnect = function(socket) {
+	var player= Player(socket.id);
+	socket.on('keyPress',function(data) {
+		if(player.dead)
+			return false;
+		//console.log(data.inputId);
+		else if(data.inputId === "left")
+			player.pressingLeft = data.state;
+		else if(data.inputId === "right")
+			player.pressingRight = data.state;
+		else if(data.inputId === "up")
+			player.pressingUp = data.state;
+		else if(data.inputId === "down")
+			player.pressingDown = data.state;
+		else if(data.inputId === "jump") {
+			player.pressingJump = data.state;
+			if (data.state) {
+				player.restTime=3;
+			}
+		}
+		else if(data.inputId === "attack") {
+			player.pressingAttack = data.state;
+		}
+	});
+}
+Player.onDisconnect = function(socket) {
+	delete Player.list[socket.id];
+}
+
+Player.revive = function(id) {
+	if (!Player.list[id])
+		return false;
+	Player.list[id].life=Player.list[id].maxLife;
+	Player.list[id].dead=false;
+	Player.list[id].invulnerable=true;
+	Player.list[id].pressingRight=false;
+	Player.list[id].pressingLeft=false;
+	Player.list[id].pressingUp=false;
+	Player.list[id].pressingDown=false;
+	Player.list[id].pressingJump=false;
+	setTimeout(function() {if (Player.list[id]) {Player.list[id].invulnerable=false;}},3000);
+}
+
+Player.updateName = function(socket,username) {
+	//console.log("Checking for "+username);
+	for (var i in Player.list) {
+		var player=Player.list[i].name;
+		if (username==player && socket.id!=Player.list[i].id) {
+			return false;			
+		}
+		else {
+				continue;
+			}
+	}
+	Player.list[socket.id].name=username;
+	return true;
+}
+
+Player.update = function() {
+	var pack=[];
+	for(var i in Player.list) {
+		var player = Player.list[i];
+		player.update();
+		pack.push({
+			x:player.x,
+			y:player.y,
+			jumped:player.pressingJump,
+			maxlife:player.maxLife,
+			life:player.life,
+			name:player.name,
+			attack:player.pressingAttack,
+			number:player.number,
+			score:player.score,
+			death:player.death,
+			dead:player.dead,
+			id:player.id,
+			draw:player.draw,
+			color:player.color,
+			invulnerable:player.invulnerable,
+			restTime:player.restTime,
+			maxmana:player.maxmana,
+			mana:player.mana,
+			pressingLeft:player.pressingLeft,
+			pressingRight:player.pressingRight,
+		}); 
+	}
+	return pack;
+}
+
+
+var io=require('socket.io')(serv,{});
+io.sockets.on('connection', function(socket) {
+	socket.id=Math.floor(10000000*Math.random());
+	socket.x=0;
+	socket.y=0;
+	//socket.number=""+Math.floor(10*Math.random());
+	SOCKET_LIST[socket.id]=socket;
+	//console.log("Connected Socket ID "+socket.id);
+	//socket.emit("serverMsg",{msg:socket.number+" joined"});
+	
+	Player.onConnect(socket)
+	
+	socket.on('revive',function(data) {
+		Player.revive(data.id);
+		for (var i in SOCKET_LIST) {
+			SOCKET_LIST[i].emit('revive_user',{id:data.id});
+		}
+	});
+	
+	socket.on('login',function(data) {
+		
+		data.username=RemoveProfanity(data.username);
+		
+		
+		if (!Player.updateName(socket,data.username)) {
+			socket.emit('serverErrorMsg',{msg:"Username already taken",ok:false});
+		}
+		else if (data.username.indexOf("*")>0) {
+			socket.emit('serverErrorMsg',{msg:"Please use a better name :)",ok:false});
+		}
+		else {
+				socket.emit('serverErrorMsg',{msg:"Success",ok:true,id:socket.id});
+				Player.list[socket.id].draw=true;
+				socket.emit('addHistoryChat',CHATHISTORY);
+			}
+	});
+	
+	socket.on('boundaries',function(data) {
+		Player.list[socket.id].xboundarymax=parseInt(data.xmax);
+		Player.list[socket.id].yboundarymax=parseInt(data.ymax);
+		Player.list[socket.id].xboundarymin=parseInt(data.xmin);
+		Player.list[socket.id].yboundarymin=parseInt(data.ymin);
+		Player.list[socket.id].x=Math.floor(parseInt(data.xmax)*Math.random());
+		Player.list[socket.id].y=Math.floor(parseInt(data.ymax)*Math.random());
+	});
+	
+	socket.on('disconnect',function() {
+		//console.log("Disconnected Socket ID "+socket.id);
+		delete SOCKET_LIST[socket.id];
+		Player.onDisconnect(socket);
+		countusers=0;
+		for (var i in SOCKET_LIST)
+			countusers++;
+		if (countusers==0)
+			CHATHISTORY="";
+		console.log(countusers+" users active right now");
+	});
+	
+	socket.on('sendMsgToServer',function(data) {
+		data=RemoveProfanity(data);
+		//var playerName = ("" + socket.id).slice(2,7);
+		var playerName = Player.list[socket.id].name;
+		CHATHISTORY=CHATHISTORY+"<div><b>"+playerName+"</b>:<i>"+data+"</i></div>";
+		//console.log(playerName+":"+data);
+		for (var i in SOCKET_LIST) {
+			SOCKET_LIST[i].emit('addToChat',"<b>"+playerName+"</b>:<i>"+data+"</i>");
+		}
+	});
+	
+
+});
+
+
+setInterval(function() {
+	var pack = {
+		player:Player.update(),
+	}
+	
+	for (var i in SOCKET_LIST) {
+		var socket = SOCKET_LIST[i];
+		socket.emit('newPositions',pack);
+	}
+	
+},1000/30);
